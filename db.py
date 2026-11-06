@@ -41,17 +41,17 @@ def init_db():
         )
     ''')
     
+    # 检查是否有 password 列（向下兼容），需在插入数据前完成
+    cursor.execute("PRAGMA table_info(ai_settings)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'password' not in columns:
+        cursor.execute("ALTER TABLE ai_settings ADD COLUMN password TEXT DEFAULT '123456'")
+
     # 插入默认行（如果不存在）
     cursor.execute('''
         INSERT OR IGNORE INTO ai_settings (id, api_key, base_url, model_name, password)
         VALUES (1, '', 'https://api.openai.com/v1', 'gpt-3.5-turbo', '123456')
     ''')
-    
-    # 检查是否有 password 列（向下兼容）
-    cursor.execute("PRAGMA table_info(ai_settings)")
-    columns = [col[1] for col in cursor.fetchall()]
-    if 'password' not in columns:
-        cursor.execute("ALTER TABLE ai_settings ADD COLUMN password TEXT DEFAULT '123456'")
 
     # 添加缺失的表
     cursor.execute('''
