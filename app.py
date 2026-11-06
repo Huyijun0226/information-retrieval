@@ -2,11 +2,12 @@ import streamlit as st
 import streamlit.components.v1 as components
 import sqlite3
 from translator import parse_input, translate_queries
-from ai_helper import AIConnectionError, test_connection, get_synonyms, chat_with_agent
+from ai_helper import AIConnectionError, test_connection, get_synonyms, chat_with_agent, parse_query_to_groups
 from db import (
     load_settings, save_settings, 
     add_chat_msg, get_chat_history, clear_chat_history,
-    add_recommendation_history, add_query_history
+    add_recommendation_history, add_query_history,
+    add_translation_history, get_query_history, get_translation_history
 )
 
 st.set_page_config(page_title="跨库检索式智能转译系统", page_icon="📚", layout="wide")
@@ -136,6 +137,113 @@ def chat_dialog():
             st.session_state.messages.append({"role": "assistant", "content": response})
             add_chat_msg("assistant", response)
 
+@st.dialog("🕒 历史记录", width="large")
+def history_dialog():
+    st.subheader("🔍 记录筛选")
+    f_col1, f_col2, f_col3, f_col4 = st.columns([3, 2, 2, 2])
+    with f_col1:
+        search_keyword = st.text_input("关键词查询 (支持模糊搜索)", placeholder="输入要查询的内容...", key="history_search_keyword")
+    with f_col2:
+        start_date = st.date_input("开始日期", value=None, key="history_start_date")
+    with f_col3:
+        end_date = st.date_input("结束日期", value=None, key="history_end_date")
+    with f_col4:
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        do_search = st.button("🔎 查询", use_container_width=True)
+
+    import datetime
+    def is_match(text_contents, item_timestamp):
+        # 如果用户没有点击查询按钮，默认不应用任何过滤（显示全部）
+        if not st.session_state.get("history_searched", False):
+            return True
+            
+        # 关键词匹配
+        if st.session_state.get("history_applied_keyword"):
+            text_to_search = " ".join([str(t) for t in text_contents if t]).lower()
+            if st.session_state.history_applied_keyword.lower() not in text_to_search:
+                return False
+        # 日期匹配
+        applied_start = st.session_state.get("history_applied_start")
+        applied_end = st.session_state.get("history_applied_end")
+        if applied_start or applied_end:
+            try:
+                item_date_str = item_timestamp.split(' ')[0]
+                item_date = datetime.datetime.strptime(item_date_str, "%Y-%m-%d").date()
+                if applied_start and item_date < applied_start:
+                    return False
+                if applied_end and item_date > applied_end:
+                    return False
+            except Exception:
+                pass
+        return True
+
+    if do_search:
+        st.session_state.history_searched = True
+        st.session_state.history_applied_keyword = search_keyword
+        st.session_state.history_applied_start = start_date
+        st.session_state.history_applied_end = end_date
+        # 取消这里的 st.rerun()，因为 st.dialog 会在 rerun 时被关闭
+
+    import re
+    def highlight_text(text):
+        """如果存在搜索关键词，则使用 Markdown 高亮显示匹配的部分"""
+        keyword = st.session_state.get("history_applied_keyword")
+        if not keyword or not st.session_state.get("history_searched", False):
+            return text
+        # 使用不区分大小写的正则替换，背景设为黄色
+        pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+        # 用 HTML span 标签进行高亮，Streamlit 的 markdown 支持部分 HTML
+        return pattern.sub(lambda m: f"<span style='background-color: yellow; color: black;'>{m.group(0)}</span>", str(text))
+
+    htab1, htab2, htab3 = st.tabs(["💬 聊天记录", "🔍 生成检索记录", "🪄 智能转译记录"])
+    
+    with htab1:
+        msgs = get_chat_history()
+        filtered_msgs = [m for m in msgs if is_match([m["content"]], m.get("timestamp", ""))]
+        if not filtered_msgs:
+            st.info("暂无符合条件的聊天记录。")
+        else:
+            for msg in filtered_msgs:
+                with st.chat_message(msg["role"]):
+                    st.caption(msg.get("timestamp", ""))
+                    st.markdown(highlight_text(msg["content"]), unsafe_allow_html=True)
+                    
+    with htab2:
+        q_history = get_query_history()
+        filtered_q = [q for q in q_history if is_match([q["group_a"], q["group_b"], q["group_d"], q["dbs"], q["results"]], q.get("timestamp", ""))]
+        if not filtered_q:
+            st.info("暂无符合条件的生成检索记录。")
+        else:
+            for item in filtered_q:
+                with st.expander(f"🕒 {item['timestamp']} - {item['dbs']}"):
+                    st.markdown("**A组 (对象层):** " + highlight_text(item['group_a'].replace('\n', ', ')), unsafe_allow_html=True)
+                    st.markdown("**B组 (危害层):** " + highlight_text(item['group_b'].replace('\n', ', ')), unsafe_allow_html=True)
+                    st.markdown("**D组 (方法层):** " + highlight_text(item['group_d'].replace('\n', ', ')), unsafe_allow_html=True)
+                    import json
+                    try:
+                        results = json.loads(item['results'])
+                        for db, data in results.items():
+                            st.markdown(f"*{db}*")
+                            # 代码块不支持内嵌 HTML，所以保持原样
+                            st.code(data['query'], language="sql")
+                    except:
+                        st.markdown(highlight_text(item['results']), unsafe_allow_html=True)
+
+    with htab3:
+        t_history = get_translation_history()
+        filtered_t = [t for t in t_history if is_match([t["source_query"], t["group_a"], t["group_b"], t["group_d"]], t.get("timestamp", ""))]
+        if not filtered_t:
+            st.info("暂无符合条件的智能转译记录。")
+        else:
+            for item in filtered_t:
+                with st.expander(f"🕒 {item['timestamp']}"):
+                    st.markdown("**原始检索式:**")
+                    st.code(item['source_query'])
+                    st.markdown("**解析结果:**")
+                    st.markdown(f"- **A组:** {highlight_text(item['group_a'].replace(chr(10), ', '))}", unsafe_allow_html=True)
+                    st.markdown(f"- **B组:** {highlight_text(item['group_b'].replace(chr(10), ', '))}", unsafe_allow_html=True)
+                    st.markdown(f"- **D组:** {highlight_text(item['group_d'].replace(chr(10), ', '))}", unsafe_allow_html=True)
+
 st.title("📚 跨库检索式智能转译系统")
 st.markdown("基于多库语法规则，一键生成 CNKI、Web of Science、IEEE Xplore、超星发现 等平台的合规检索式。")
 
@@ -149,12 +257,12 @@ start_year = st.sidebar.number_input("起始年份", min_value=1900, max_value=2
 end_year = st.sidebar.number_input("结束年份", min_value=1900, max_value=2100, value=2026)
 
 st.sidebar.markdown("---")
-st.sidebar.header("🤖 AI 设置 (OpenAI 兼容)")
 
-# AI 设置输入区
 disabled = st.session_state.ai_locked
 saved_settings = (st.session_state.api_key, st.session_state.base_url, st.session_state.model_name)
-with st.sidebar:
+
+with st.sidebar.expander("🤖 AI 设置 (OpenAI 兼容)", expanded=not disabled):
+    # AI 设置输入区
     api_key = st.text_input("API Key (可选)", type="password", key="api_key_widget", value=saved_settings[0],
                             disabled=disabled, on_change=clear_connection_notice, help="留空并保存可使用离线词库。")
     base_url = st.text_input("Base URL", key="base_url_widget", value=saved_settings[1], disabled=disabled,
@@ -182,6 +290,11 @@ with st.sidebar:
         st.caption("当前使用离线体验模式。")
 
 st.sidebar.markdown("---")
+st.sidebar.header("🕒 历史记录")
+if st.sidebar.button("查看历史记录", use_container_width=True):
+    history_dialog()
+
+st.sidebar.markdown("---")
 st.sidebar.header("👩‍🔬 数字人助手")
 st.sidebar.image(avatar_url, use_column_width=True, caption="您的学术检索专属向导")
 open_chat = st.sidebar.button("💬 点击与数字人对话", use_container_width=True, type="primary", disabled=has_unsaved_changes)
@@ -189,15 +302,105 @@ if open_chat and not has_unsaved_changes:
     chat_dialog()
 
 # Inputs
-st.subheader("📝 概念组关键词输入 (每行一个词)")
-col1, col2, col3 = st.columns(3)
+tab1, tab2 = st.tabs(["🧩 概念组拼接模式", "🪄 智能转译模式 (输入完整检索式)"])
 
-with col1:
-    st.text_area("A组：对象层 (如：作物, plant)", key="group_a", height=200)
-with col2:
-    st.text_area("B组：危害层 (如：病害, disease)", key="group_b", height=200)
-with col3:
-    st.text_area("D组：方法层 (如：深度学习, YOLO)", key="group_d", height=200)
+with tab1:
+    st.subheader("📝 概念组关键词输入 (每行一个词)")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.text_area("A组：对象层 (如：作物, plant)", key="group_a_widget", value=st.session_state.group_a, height=200, on_change=lambda: st.session_state.update(group_a=st.session_state.group_a_widget))
+    with col2:
+        st.text_area("B组：危害层 (如：病害, disease)", key="group_b_widget", value=st.session_state.group_b, height=200, on_change=lambda: st.session_state.update(group_b=st.session_state.group_b_widget))
+    with col3:
+        st.text_area("D组：方法层 (如：深度学习, YOLO)", key="group_d_widget", value=st.session_state.group_d, height=200, on_change=lambda: st.session_state.update(group_d=st.session_state.group_d_widget))
+
+with tab2:
+    st.subheader("🪄 输入现有文献库的完整检索式")
+    source_query = st.text_area("例如: TS=(\"plant\" OR \"crop\") AND TS=(\"disease\")", key="source_query", height=200)
+    if st.button("🚀 解析并更新到概念组", use_container_width=True, disabled=has_unsaved_changes):
+        if source_query.strip():
+            with st.spinner("AI 正在解析检索式..."):
+                try:
+                    groups = parse_query_to_groups(
+                        source_query, 
+                        st.session_state.api_key, 
+                        st.session_state.base_url, 
+                        st.session_state.model_name
+                    )
+                    group_a_str = "\n".join(groups.get("group_a", []))
+                    group_b_str = "\n".join(groups.get("group_b", []))
+                    group_d_str = "\n".join(groups.get("group_d", []))
+                    st.session_state.group_a = group_a_str
+                    st.session_state.group_b = group_b_str
+                    st.session_state.group_d = group_d_str
+                    
+                    add_translation_history(source_query, group_a_str, group_b_str, group_d_str)
+                    
+                    st.toast("✅ 解析成功！已自动填入概念组中。")
+                    st.rerun()
+                except AIConnectionError as exc:
+                    st.error(str(exc))
+        else:
+            st.warning("请输入完整的检索式")
+
+    if st.button("🔄 转译为其他文献库语法", type="primary", use_container_width=True, disabled=has_unsaved_changes):
+        if source_query.strip():
+            with st.spinner("AI 正在解析并转译..."):
+                try:
+                    groups = parse_query_to_groups(
+                        source_query, 
+                        st.session_state.api_key, 
+                        st.session_state.base_url, 
+                        st.session_state.model_name
+                    )
+                    group_a_str = "\n".join(groups.get("group_a", []))
+                    group_b_str = "\n".join(groups.get("group_b", []))
+                    group_d_str = "\n".join(groups.get("group_d", []))
+                    st.session_state.group_a = group_a_str
+                    st.session_state.group_b = group_b_str
+                    st.session_state.group_d = group_d_str
+                    
+                    add_translation_history(source_query, group_a_str, group_b_str, group_d_str)
+                    
+                    parsed_a = parse_input(group_a_str)
+                    parsed_b = parse_input(group_b_str)
+                    parsed_d = parse_input(group_d_str)
+                    valid_groups = [parsed_a, parsed_b, parsed_d]
+                    
+                    if not any(valid_groups):
+                        st.session_state.direct_translate_msg = ("warning", "⚠️ 未能从检索式中解析出有效关键词，请检查输入！")
+                    elif not dbs:
+                        st.session_state.direct_translate_msg = ("warning", "⚠️ 请至少在左侧选择一个目标数据库！")
+                    else:
+                        results = translate_queries(valid_groups, dbs, start_year, end_year)
+                        add_query_history(group_a_str, group_b_str, group_d_str, dbs, start_year, end_year, results)
+                        st.session_state.direct_translate_msg = ("success", "✅ 解析并转译成功！")
+                        st.session_state.direct_translate_results = results
+                    
+                    st.rerun()
+                except AIConnectionError as exc:
+                    st.error(str(exc))
+        else:
+            st.warning("请输入完整的检索式")
+            
+    # 用于在 rerun 后展示单次转译结果
+    if "direct_translate_msg" in st.session_state:
+        msg_type, msg_text = st.session_state.direct_translate_msg
+        if msg_type == "success":
+            st.success(msg_text)
+        else:
+            st.warning(msg_text)
+        del st.session_state.direct_translate_msg
+        
+    if "direct_translate_results" in st.session_state:
+        st.markdown("---")
+        for db, data in st.session_state.direct_translate_results.items():
+            st.markdown(f"### {db}")
+            st.info(data['note'])
+            st.code(data['query'], language="sql")
+            st.markdown("---")
+        del st.session_state.direct_translate_results
 
 # AI 推荐模块
 st.markdown("---")

@@ -53,6 +53,16 @@ def init_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS translation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_query TEXT,
+            group_a TEXT,
+            group_b TEXT,
+            group_d TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
     conn.commit()
     conn.close()
@@ -100,10 +110,10 @@ def add_chat_msg(role, content):
 def get_chat_history():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT role, content FROM chat_history ORDER BY id ASC')
+    cursor.execute('SELECT role, content, timestamp FROM chat_history ORDER BY id ASC')
     rows = cursor.fetchall()
     conn.close()
-    return [{"role": r[0], "content": r[1]} for r in rows]
+    return [{"role": r[0], "content": r[1], "timestamp": r[2]} for r in rows]
 
 def clear_chat_history():
     conn = sqlite3.connect(DB_FILE)
@@ -131,3 +141,30 @@ def add_query_history(group_a, group_b, group_d, dbs, start_year, end_year, resu
     ''', (group_a, group_b, group_d, dbs_str, start_year, end_year, results_str))
     conn.commit()
     conn.close()
+
+def add_translation_history(source_query, group_a, group_b, group_d):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO translation_history (source_query, group_a, group_b, group_d) 
+        VALUES (?, ?, ?, ?)
+    ''', (source_query, group_a, group_b, group_d))
+    conn.commit()
+    conn.close()
+
+def get_query_history():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, group_a, group_b, group_d, dbs, start_year, end_year, results, timestamp FROM query_history ORDER BY id DESC LIMIT 1000')
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r[0], "group_a": r[1], "group_b": r[2], "group_d": r[3], "dbs": r[4], "start_year": r[5], "end_year": r[6], "results": r[7], "timestamp": r[8]} for r in rows]
+
+def get_translation_history():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, source_query, group_a, group_b, group_d, timestamp FROM translation_history ORDER BY id DESC LIMIT 1000')
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r[0], "source_query": r[1], "group_a": r[2], "group_b": r[3], "group_d": r[4], "timestamp": r[5]} for r in rows]
+

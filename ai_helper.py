@@ -144,6 +144,41 @@ def get_synonyms(keyword, api_key, base_url, model_name):
         raise AIConnectionError("已连接模型，但推荐结果不是有效的词语列表。请重试或更换模型。")
     return [word.strip() for word in words]
 
+def parse_query_to_groups(query, api_key, base_url, model_name):
+    """将完整的检索式解析为三个概念组"""
+    if not (api_key or "").strip():
+        # 离线模式下返回一个 Mock 结果
+        return {
+            "group_a": ["plant", "crop"],
+            "group_b": ["disease", "pest"],
+            "group_d": ["deep learning", "YOLO"]
+        }
+        
+    settings = _connection_settings(api_key, base_url, model_name)
+    prompt = (
+        f"请分析以下文献检索式：\n{query}\n\n"
+        "将其中的检索词提取并分类为以下三组（如果没有对应概念则为空列表）：\n"
+        "1. group_a：对象层（如作物、植物、plant等）\n"
+        "2. group_b：危害层（如病害、虫害、disease等）\n"
+        "3. group_d：方法层（如深度学习、目标检测、YOLO等）\n"
+        "请严格以 JSON 格式返回，包含 group_a, group_b, group_d 三个键，值为字符串列表。"
+        "注意：只需要提取基础词汇，去除通配符、引号和逻辑运算符。不要返回任何其他解释文本或 Markdown 标记。"
+    )
+    content = _chat_completion(settings, [
+        {"role": "system", "content": "你是一个农业与计算机视觉领域的学术检索辅助专家。"},
+        {"role": "user", "content": prompt},
+    ])
+    content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        groups = json.loads(content)
+    except ValueError:
+        groups = None
+        
+    if not isinstance(groups, dict) or not all(k in groups for k in ["group_a", "group_b", "group_d"]):
+        raise AIConnectionError("已连接模型，但解析结果格式不正确。请重试或更换模型。")
+        
+    return groups
+
 def chat_with_agent(messages, api_key, base_url, model_name):
     """数字人对话功能"""
     if not (api_key or "").strip():
