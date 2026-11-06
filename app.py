@@ -4,7 +4,7 @@ import sqlite3
 from translator import parse_input, translate_queries
 from ai_helper import AIConnectionError, test_connection, get_synonyms, chat_with_agent, parse_query_to_groups
 from db import (
-    load_settings, save_settings, 
+    load_settings, save_settings, update_password,
     add_chat_msg, get_chat_history, clear_chat_history,
     add_recommendation_history, add_query_history,
     add_translation_history, get_query_history, get_translation_history
@@ -42,10 +42,40 @@ def clear_connection_notice():
     st.session_state.pop("connection_notice", None)
 
 
+@st.dialog("🔒 验证密码")
+def password_dialog():
+    st.write("请输入密码以编辑 AI 设置 (默认: 123456)")
+    pwd_input = st.text_input("密码", type="password", key="edit_pwd_input")
+    if st.button("确认", use_container_width=True):
+        if pwd_input == db_settings.get("password", "123456"):
+            clear_connection_notice()
+            st.session_state.ai_locked = False
+            st.rerun()
+        else:
+            st.error("密码错误！")
+
+@st.dialog("🔑 修改密码")
+def change_password_dialog():
+    old_pwd = st.text_input("原密码", type="password", key="old_pwd_input")
+    new_pwd = st.text_input("新密码", type="password", key="new_pwd_input")
+    confirm_pwd = st.text_input("确认新密码", type="password", key="confirm_pwd_input")
+    
+    if st.button("确认修改", use_container_width=True):
+        if old_pwd != db_settings.get("password", "123456"):
+            st.error("原密码错误！")
+        elif new_pwd != confirm_pwd:
+            st.error("两次输入的新密码不一致！")
+        elif not new_pwd:
+            st.error("新密码不能为空！")
+        else:
+            update_password(new_pwd)
+            db_settings["password"] = new_pwd
+            st.success("密码修改成功！")
+            st.rerun()
+
 def toggle_ai_lock():
-    """解锁以供编辑"""
-    clear_connection_notice()
-    st.session_state.ai_locked = False
+    """解锁以供编辑 (需要密码)"""
+    password_dialog()
 
 
 def check_ai_settings(settings, *, save):
@@ -260,21 +290,38 @@ st.sidebar.markdown("---")
 
 disabled = st.session_state.ai_locked
 saved_settings = (st.session_state.api_key, st.session_state.base_url, st.session_state.model_name)
+display_api_key = "********" if st.session_state.api_key else ""
 
 with st.sidebar.expander("🤖 AI 设置 (OpenAI 兼容)", expanded=not disabled):
     # AI 设置输入区
-    api_key = st.text_input("API Key (可选)", type="password", key="api_key_widget", value=saved_settings[0],
-                            disabled=disabled, on_change=clear_connection_notice, help="留空并保存可使用离线词库。")
+    api_key_input = st.text_input("API Key (可选)", type="password", key="api_key_widget", 
+                            value=display_api_key if disabled else "",
+                            disabled=disabled, on_change=clear_connection_notice, 
+                            help="如果已保存过密钥，留空则保持不变。否则留空为离线模式。",
+                            placeholder="留空则保持原密钥不变" if st.session_state.api_key else "")
+    
+    # 判断最终使用的 api key
+    if not disabled and api_key_input == "" and st.session_state.api_key:
+        final_api_key = st.session_state.api_key
+    elif disabled:
+        final_api_key = st.session_state.api_key
+    else:
+        final_api_key = api_key_input
+
     base_url = st.text_input("Base URL", key="base_url_widget", value=saved_settings[1], disabled=disabled,
                              on_change=clear_connection_notice, help="填写发放该 Key 的服务商提供的 OpenAI 兼容接口地址。")
     model_name = st.text_input("Model", key="model_name_widget", value=saved_settings[2], disabled=disabled,
                                on_change=clear_connection_notice, help="使用该服务商为你的账号开放的模型 ID。")
-    draft_settings = (api_key, base_url, model_name)
+    draft_settings = (final_api_key, base_url, model_name)
     has_unsaved_changes = not disabled and draft_settings != saved_settings
     if disabled:
-        if api_key and st.button("测试连接", use_container_width=True):
+        if final_api_key and st.button("测试连接", use_container_width=True):
             check_ai_settings(saved_settings, save=False)
-        st.button("✏️ 编辑", on_click=toggle_ai_lock, use_container_width=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.button("✏️ 编辑", on_click=toggle_ai_lock, use_container_width=True)
+        with col2:
+            st.button("🔑 改密", on_click=change_password_dialog, use_container_width=True)
     elif st.button("验证并保存", type="primary", use_container_width=True):
         check_ai_settings(draft_settings, save=True)
 
@@ -286,7 +333,7 @@ with st.sidebar.expander("🤖 AI 设置 (OpenAI 兼容)", expanded=not disabled
             st.success(message)
     if has_unsaved_changes:
         st.caption("请先验证并保存更改，再获取推荐或发起对话。")
-    elif not api_key:
+    elif not final_api_key:
         st.caption("当前使用离线体验模式。")
 
 st.sidebar.markdown("---")
@@ -395,11 +442,13 @@ with tab2:
         
     if "direct_translate_results" in st.session_state:
         st.markdown("---")
-        for db, data in st.session_state.direct_translate_results.items():
-            st.markdown(f"### {db}")
-            st.info(data['note'])
-            st.code(data['query'], language="sql")
-            st.markdown("---")
+        for db in dbs:
+            if db in st.session_state.direct_translate_results:
+                data = st.session_state.direct_translate_results[db]
+                st.markdown(f"### {db}")
+                st.info(data['note'])
+                st.code(data['query'], language="sql")
+                st.markdown("---")
         del st.session_state.direct_translate_results
 
 # AI 推荐模块
@@ -451,16 +500,19 @@ if st.button("🚀 一键生成检索式", type="primary", use_container_width=T
     else:
         st.success("✅ 生成成功！请复制下方对应的检索式。")
         results = translate_queries(groups, dbs, start_year, end_year)
+        st.write(f"Debug: dbs is {dbs}")
         
         # 记录到数据库
         add_query_history(st.session_state.group_a, st.session_state.group_b, st.session_state.group_d, dbs, start_year, end_year, results)
         
-        # Display results in cards
-        for db, data in results.items():
-            st.markdown(f"### {db}")
-            st.info(data['note'])
-            st.code(data['query'], language="sql")
-            st.markdown("---")
+        # Display results in cards, ONLY for the selected databases in `dbs`
+        for db in dbs:
+            if db in results:
+                data = results[db]
+                st.markdown(f"### {db}")
+                st.info(data['note'])
+                st.code(data['query'], language="sql")
+                st.markdown("---")
 
 # ================= 注入悬浮可拖拽数字人组件 =================
 components.html(f"""

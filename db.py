@@ -1,8 +1,31 @@
 import sqlite3
 from pathlib import Path
 import json
+import base64
+from cryptography.fernet import Fernet
 
 DB_FILE = Path(__file__).resolve().with_name("settings.db")
+
+# 固定的加密密钥 (在实际生产中应该通过环境变量注入，这里为了简化演示直接使用固定值)
+ENCRYPTION_KEY = b'wz9-kE0q3wG-yU6f5W3V_s1s2r1k9tX7yU9zH1c4o0w='
+cipher_suite = Fernet(ENCRYPTION_KEY)
+
+def encrypt_api_key(api_key: str) -> str:
+    if not api_key:
+        return ""
+    try:
+        return cipher_suite.encrypt(api_key.encode()).decode()
+    except Exception:
+        return ""
+
+def decrypt_api_key(encrypted_key: str) -> str:
+    if not encrypted_key:
+        return ""
+    try:
+        return cipher_suite.decrypt(encrypted_key.encode()).decode()
+    except Exception:
+        # 如果解密失败（比如原先是明文存储的），则直接返回原文本
+        return encrypted_key
 
 def init_db():
     """初始化数据库表"""
@@ -13,15 +36,22 @@ def init_db():
             id INTEGER PRIMARY KEY CHECK (id = 1),
             api_key TEXT,
             base_url TEXT,
-            model_name TEXT
+            model_name TEXT,
+            password TEXT DEFAULT '123456'
         )
     ''')
     
     # 插入默认行（如果不存在）
     cursor.execute('''
-        INSERT OR IGNORE INTO ai_settings (id, api_key, base_url, model_name)
-        VALUES (1, '', 'https://api.openai.com/v1', 'gpt-3.5-turbo')
+        INSERT OR IGNORE INTO ai_settings (id, api_key, base_url, model_name, password)
+        VALUES (1, '', 'https://api.openai.com/v1', 'gpt-3.5-turbo', '123456')
     ''')
+    
+    # 检查是否有 password 列（向下兼容）
+    cursor.execute("PRAGMA table_info(ai_settings)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'password' not in columns:
+        cursor.execute("ALTER TABLE ai_settings ADD COLUMN password TEXT DEFAULT '123456'")
 
     # 添加缺失的表
     cursor.execute('''
@@ -74,13 +104,13 @@ def load_settings():
         
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT api_key, base_url, model_name FROM ai_settings WHERE id = 1')
+    cursor.execute('SELECT api_key, base_url, model_name, password FROM ai_settings WHERE id = 1')
     row = cursor.fetchone()
     conn.close()
     
     if row:
-        return {"api_key": row[0], "base_url": row[1], "model_name": row[2]}
-    return {"api_key": "", "base_url": "https://api.openai.com/v1", "model_name": "gpt-3.5-turbo"}
+        return {"api_key": decrypt_api_key(row[0]), "base_url": row[1], "model_name": row[2], "password": row[3]}
+    return {"api_key": "", "base_url": "https://api.openai.com/v1", "model_name": "gpt-3.5-turbo", "password": "123456"}
 
 def save_settings(api_key, base_url, model_name):
     """保存配置"""
@@ -89,11 +119,20 @@ def save_settings(api_key, base_url, model_name):
         
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+    encrypted_key = encrypt_api_key(api_key)
     cursor.execute('''
         UPDATE ai_settings 
         SET api_key = ?, base_url = ?, model_name = ?
         WHERE id = 1
-    ''', (api_key, base_url, model_name))
+    ''', (encrypted_key, base_url, model_name))
+    conn.commit()
+    conn.close()
+
+def update_password(new_password):
+    """更新密码"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE ai_settings SET password = ? WHERE id = 1', (new_password,))
     conn.commit()
     conn.close()
 
