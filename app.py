@@ -16,6 +16,11 @@ st.set_page_config(page_title="跨库检索式智能转译系统", page_icon="�
 # 从数据库加载 AI 设置
 db_settings = load_settings()
 
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "home"
+if "selected_iframe_url" not in st.session_state:
+    st.session_state.selected_iframe_url = ""
+
 if "group_a" not in st.session_state:
     st.session_state.group_a = "作物\n植物\n叶片\ncrop\nplant\nleaf"
 if "group_b" not in st.session_state:
@@ -274,9 +279,19 @@ def history_dialog():
                     st.markdown(f"- **B组:** {highlight_text(item['group_b'].replace(chr(10), ', '))}", unsafe_allow_html=True)
                     st.markdown(f"- **D组:** {highlight_text(item['group_d'].replace(chr(10), ', '))}", unsafe_allow_html=True)
 
-st.title("📚 跨库检索式智能转译系统")
-st.markdown("基于多库语法规则，一键生成 CNKI、Web of Science、IEEE Xplore、超星发现 等平台的合规检索式。")
 
+st.sidebar.markdown("---")
+st.sidebar.header("🌐 页面导航")
+if st.session_state.current_page == "home":
+    if st.sidebar.button("🚀 切换至专业检索入口", use_container_width=True):
+        st.session_state.current_page = "search_portal"
+        st.rerun()
+else:
+    if st.sidebar.button("🏠 返回智能转译主页", use_container_width=True):
+        st.session_state.current_page = "home"
+        st.rerun()
+
+st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 检索设置")
 dbs = st.sidebar.multiselect(
     "选择目标数据库",
@@ -348,171 +363,186 @@ open_chat = st.sidebar.button("💬 点击与数字人对话", use_container_wid
 if open_chat and not has_unsaved_changes:
     chat_dialog()
 
-# Inputs
-tab1, tab2 = st.tabs(["🧩 概念组拼接模式", "🪄 智能转译模式 (输入完整检索式)"])
+# ================= 主界面 =================
+if st.session_state.current_page == "home":
+    st.title("📚 跨库检索式智能转译系统")
+    st.markdown("基于多库语法规则，一键生成 CNKI、Web of Science、IEEE Xplore、超星发现 等平台的合规检索式。")
 
-with tab1:
-    st.subheader("📝 概念组关键词输入 (每行一个词)")
-    col1, col2, col3 = st.columns(3)
+    # Inputs
+    tab1, tab2 = st.tabs(["🧩 概念组拼接模式", "🪄 智能转译模式 (输入完整检索式)"])
+
+    with tab1:
+        st.subheader("📝 概念组关键词输入 (每行一个词)")
+        col1, col2, col3 = st.columns(3)
     
-    with col1:
-        st.text_area("A组：对象层 (如：作物, plant)", key="group_a_widget", value=st.session_state.group_a, height=200, on_change=lambda: st.session_state.update(group_a=st.session_state.group_a_widget))
-    with col2:
-        st.text_area("B组：危害层 (如：病害, disease)", key="group_b_widget", value=st.session_state.group_b, height=200, on_change=lambda: st.session_state.update(group_b=st.session_state.group_b_widget))
-    with col3:
-        st.text_area("D组：方法层 (如：深度学习, YOLO)", key="group_d_widget", value=st.session_state.group_d, height=200, on_change=lambda: st.session_state.update(group_d=st.session_state.group_d_widget))
+        with col1:
+            st.text_area("A组：对象层 (如：作物, plant)", key="group_a_widget", value=st.session_state.group_a, height=200, on_change=lambda: st.session_state.update(group_a=st.session_state.group_a_widget))
+        with col2:
+            st.text_area("B组：危害层 (如：病害, disease)", key="group_b_widget", value=st.session_state.group_b, height=200, on_change=lambda: st.session_state.update(group_b=st.session_state.group_b_widget))
+        with col3:
+            st.text_area("D组：方法层 (如：深度学习, YOLO)", key="group_d_widget", value=st.session_state.group_d, height=200, on_change=lambda: st.session_state.update(group_d=st.session_state.group_d_widget))
 
-with tab2:
-    st.subheader("🪄 输入现有文献库的完整检索式")
-    source_query = st.text_area("例如: TS=(\"plant\" OR \"crop\") AND TS=(\"disease\")", key="source_query", height=200)
-    if st.button("🚀 解析并更新到概念组", use_container_width=True, disabled=has_unsaved_changes):
-        if source_query.strip():
-            with st.spinner("AI 正在解析检索式..."):
-                try:
-                    groups = parse_query_to_groups(
-                        source_query, 
-                        st.session_state.api_key, 
-                        st.session_state.base_url, 
-                        st.session_state.model_name
-                    )
-                    group_a_str = "\n".join(groups.get("group_a", []))
-                    group_b_str = "\n".join(groups.get("group_b", []))
-                    group_d_str = "\n".join(groups.get("group_d", []))
-                    st.session_state.group_a = group_a_str
-                    st.session_state.group_b = group_b_str
-                    st.session_state.group_d = group_d_str
+    with tab2:
+        st.subheader("🪄 输入现有文献库的完整检索式")
+        source_query = st.text_area("例如: TS=(\"plant\" OR \"crop\") AND TS=(\"disease\")", key="source_query", height=200)
+        if st.button("🚀 解析并更新到概念组", use_container_width=True, disabled=has_unsaved_changes):
+            if source_query.strip():
+                with st.spinner("AI 正在解析检索式..."):
+                    try:
+                        groups = parse_query_to_groups(
+                            source_query, 
+                            st.session_state.api_key, 
+                            st.session_state.base_url, 
+                            st.session_state.model_name
+                        )
+                        group_a_str = "\n".join(groups.get("group_a", []))
+                        group_b_str = "\n".join(groups.get("group_b", []))
+                        group_d_str = "\n".join(groups.get("group_d", []))
+                        st.session_state.group_a = group_a_str
+                        st.session_state.group_b = group_b_str
+                        st.session_state.group_d = group_d_str
                     
-                    add_translation_history(source_query, group_a_str, group_b_str, group_d_str)
+                        add_translation_history(source_query, group_a_str, group_b_str, group_d_str)
                     
-                    st.toast("✅ 解析成功！已自动填入概念组中。")
-                    st.rerun()
-                except AIConnectionError as exc:
-                    st.error(str(exc))
-        else:
-            st.warning("请输入完整的检索式")
-
-    if st.button("🔄 转译为其他文献库语法", type="primary", use_container_width=True, disabled=has_unsaved_changes):
-        if source_query.strip():
-            with st.spinner("AI 正在解析并转译..."):
-                try:
-                    groups = parse_query_to_groups(
-                        source_query, 
-                        st.session_state.api_key, 
-                        st.session_state.base_url, 
-                        st.session_state.model_name
-                    )
-                    group_a_str = "\n".join(groups.get("group_a", []))
-                    group_b_str = "\n".join(groups.get("group_b", []))
-                    group_d_str = "\n".join(groups.get("group_d", []))
-                    st.session_state.group_a = group_a_str
-                    st.session_state.group_b = group_b_str
-                    st.session_state.group_d = group_d_str
-                    
-                    add_translation_history(source_query, group_a_str, group_b_str, group_d_str)
-                    
-                    parsed_a = parse_input(group_a_str)
-                    parsed_b = parse_input(group_b_str)
-                    parsed_d = parse_input(group_d_str)
-                    valid_groups = [parsed_a, parsed_b, parsed_d]
-                    
-                    if not any(valid_groups):
-                        st.session_state.direct_translate_msg = ("warning", "⚠️ 未能从检索式中解析出有效关键词，请检查输入！")
-                    elif not dbs:
-                        st.session_state.direct_translate_msg = ("warning", "⚠️ 请至少在左侧选择一个目标数据库！")
-                    else:
-                        results = translate_queries(valid_groups, dbs, start_year, end_year)
-                        add_query_history(group_a_str, group_b_str, group_d_str, dbs, start_year, end_year, results)
-                        st.session_state.direct_translate_msg = ("success", "✅ 解析并转译成功！")
-                        st.session_state.direct_translate_results = results
-                    
-                    st.rerun()
-                except AIConnectionError as exc:
-                    st.error(str(exc))
-        else:
-            st.warning("请输入完整的检索式")
-            
-    # 用于在 rerun 后展示单次转译结果
-    if "direct_translate_msg" in st.session_state:
-        msg_type, msg_text = st.session_state.direct_translate_msg
-        if msg_type == "success":
-            st.success(msg_text)
-        else:
-            st.warning(msg_text)
-        del st.session_state.direct_translate_msg
-        
-    if "direct_translate_results" in st.session_state:
-        st.markdown("---")
-        for db in dbs:
-            if db in st.session_state.direct_translate_results:
-                data = st.session_state.direct_translate_results[db]
-                st.markdown(f"### {db}")
-                st.info(data['note'])
-                st.code(data['query'], language="sql")
-                st.markdown("---")
-        del st.session_state.direct_translate_results
-
-# AI 推荐模块
-st.markdown("---")
-st.subheader("🤖 AI 智能同义词推荐")
-ai_col1, ai_col2, ai_col3 = st.columns([2, 2, 1])
-
-with ai_col1:
-    st.selectbox("选择要扩充的概念组", ["A组：对象层", "B组：危害层", "D组：方法层"], key="target_group_widget")
-with ai_col2:
-    seed_keyword = st.text_input("输入种子词汇 (例如：番茄 或 分割)")
-with ai_col3:
-    st.markdown("<br>", unsafe_allow_html=True)
-    get_recommendations = st.button("✨ 获取推荐", use_container_width=True, disabled=has_unsaved_changes)
-
-if get_recommendations and not has_unsaved_changes:
-    if seed_keyword.strip():
-        with st.spinner("AI 正在思考..."):
-            try:
-                synonyms = get_synonyms(seed_keyword, *saved_settings)
-            except AIConnectionError as exc:
-                st.session_state.recommended_synonyms = []
-                st.error(str(exc))
+                        st.toast("✅ 解析成功！已自动填入概念组中。")
+                        st.rerun()
+                    except AIConnectionError as exc:
+                        st.error(str(exc))
             else:
-                st.session_state.recommended_synonyms = synonyms
-                add_recommendation_history(seed_keyword, synonyms)
-    else:
-        st.warning("请输入种子词汇")
+                st.warning("请输入完整的检索式")
 
-if "recommended_synonyms" in st.session_state and st.session_state.recommended_synonyms:
-    st.info("💡 推荐结果：")
-    st.multiselect("请勾选您认为合适的同义词：", st.session_state.recommended_synonyms, default=st.session_state.recommended_synonyms, key="selected_synonyms_widget")
-    st.button("➕ 将勾选词汇追加到选中组", on_click=append_synonyms)
-
-st.markdown("---")
-
-if st.button("🚀 一键生成检索式", type="primary", use_container_width=True):
-    # Parse inputs
-    group_a = parse_input(st.session_state.group_a)
-    group_b = parse_input(st.session_state.group_b)
-    group_d = parse_input(st.session_state.group_d)
-    
-    groups = [group_a, group_b, group_d]
-    
-    if not any(groups):
-        st.warning("⚠️ 请至少输入一组关键词！")
-    elif not dbs:
-        st.warning("⚠️ 请至少在左侧选择一个目标数据库！")
-    else:
-        st.success("✅ 生成成功！请复制下方对应的检索式。")
-        results = translate_queries(groups, dbs, start_year, end_year)
-        st.write(f"Debug: dbs is {dbs}")
+        if st.button("🔄 转译为其他文献库语法", type="primary", use_container_width=True, disabled=has_unsaved_changes):
+            if source_query.strip():
+                with st.spinner("AI 正在解析并转译..."):
+                    try:
+                        groups = parse_query_to_groups(
+                            source_query, 
+                            st.session_state.api_key, 
+                            st.session_state.base_url, 
+                            st.session_state.model_name
+                        )
+                        group_a_str = "\n".join(groups.get("group_a", []))
+                        group_b_str = "\n".join(groups.get("group_b", []))
+                        group_d_str = "\n".join(groups.get("group_d", []))
+                        st.session_state.group_a = group_a_str
+                        st.session_state.group_b = group_b_str
+                        st.session_state.group_d = group_d_str
+                    
+                        add_translation_history(source_query, group_a_str, group_b_str, group_d_str)
+                    
+                        parsed_a = parse_input(group_a_str)
+                        parsed_b = parse_input(group_b_str)
+                        parsed_d = parse_input(group_d_str)
+                        valid_groups = [parsed_a, parsed_b, parsed_d]
+                    
+                        if not any(valid_groups):
+                            st.session_state.direct_translate_msg = ("warning", "⚠️ 未能从检索式中解析出有效关键词，请检查输入！")
+                        elif not dbs:
+                            st.session_state.direct_translate_msg = ("warning", "⚠️ 请至少在左侧选择一个目标数据库！")
+                        else:
+                            results = translate_queries(valid_groups, dbs, start_year, end_year)
+                            add_query_history(group_a_str, group_b_str, group_d_str, dbs, start_year, end_year, results)
+                            st.session_state.direct_translate_msg = ("success", "✅ 解析并转译成功！")
+                            st.session_state.direct_translate_results = results
+                    
+                        st.rerun()
+                    except AIConnectionError as exc:
+                        st.error(str(exc))
+            else:
+                st.warning("请输入完整的检索式")
+            
+        # 用于在 rerun 后展示单次转译结果
+        if "direct_translate_msg" in st.session_state:
+            msg_type, msg_text = st.session_state.direct_translate_msg
+            if msg_type == "success":
+                st.success(msg_text)
+            else:
+                st.warning(msg_text)
+            del st.session_state.direct_translate_msg
         
-        # 记录到数据库
-        add_query_history(st.session_state.group_a, st.session_state.group_b, st.session_state.group_d, dbs, start_year, end_year, results)
+        if "direct_translate_results" in st.session_state:
+            st.markdown("---")
+            for db in dbs:
+                if db in st.session_state.direct_translate_results:
+                    data = st.session_state.direct_translate_results[db]
+                    st.markdown(f"### {db}")
+                    st.info(data['note'])
+                    st.code(data['query'], language="sql")
+                    st.markdown("---")
+            del st.session_state.direct_translate_results
+
+    # AI 推荐模块
+    st.markdown("---")
+    st.subheader("🤖 AI 智能同义词推荐")
+    ai_col1, ai_col2, ai_col3 = st.columns([2, 2, 1])
+
+    with ai_col1:
+        st.selectbox("选择要扩充的概念组", ["A组：对象层", "B组：危害层", "D组：方法层"], key="target_group_widget")
+    with ai_col2:
+        seed_keyword = st.text_input("输入种子词汇 (例如：番茄 或 分割)")
+    with ai_col3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        get_recommendations = st.button("✨ 获取推荐", use_container_width=True, disabled=has_unsaved_changes)
+
+    if get_recommendations and not has_unsaved_changes:
+        if seed_keyword.strip():
+            with st.spinner("AI 正在思考..."):
+                try:
+                    synonyms = get_synonyms(seed_keyword, *saved_settings)
+                except AIConnectionError as exc:
+                    st.session_state.recommended_synonyms = []
+                    st.error(str(exc))
+                else:
+                    st.session_state.recommended_synonyms = synonyms
+                    add_recommendation_history(seed_keyword, synonyms)
+        else:
+            st.warning("请输入种子词汇")
+
+    if "recommended_synonyms" in st.session_state and st.session_state.recommended_synonyms:
+        st.info("💡 推荐结果：")
+        st.multiselect("请勾选您认为合适的同义词：", st.session_state.recommended_synonyms, default=st.session_state.recommended_synonyms, key="selected_synonyms_widget")
+        st.button("➕ 将勾选词汇追加到选中组", on_click=append_synonyms)
+
+    st.markdown("---")
+
+    if st.button("🚀 一键生成检索式", type="primary", use_container_width=True):
+        # Parse inputs
+        group_a = parse_input(st.session_state.group_a)
+        group_b = parse_input(st.session_state.group_b)
+        group_d = parse_input(st.session_state.group_d)
+    
+        groups = [group_a, group_b, group_d]
+    
+        if not any(groups):
+            st.warning("⚠️ 请至少输入一组关键词！")
+        elif not dbs:
+            st.warning("⚠️ 请至少在左侧选择一个目标数据库！")
+        else:
+            st.success("✅ 生成成功！请复制下方对应的检索式。")
+            results = translate_queries(groups, dbs, start_year, end_year)
+            st.write(f"Debug: dbs is {dbs}")
         
-        # Display results in cards, ONLY for the selected databases in `dbs`
-        for db in dbs:
-            if db in results:
-                data = results[db]
-                st.markdown(f"### {db}")
-                st.info(data['note'])
-                st.code(data['query'], language="sql")
-                st.markdown("---")
+            # 记录到数据库
+            add_query_history(st.session_state.group_a, st.session_state.group_b, st.session_state.group_d, dbs, start_year, end_year, results)
+        
+            # Display results in cards, ONLY for the selected databases in `dbs`
+            for db in dbs:
+                if db in results:
+                    data = results[db]
+                    st.markdown(f"### {db}")
+                    st.info(data['note'])
+                    st.code(data['query'], language="sql")
+                    st.markdown("---")
+
+elif st.session_state.current_page == "search_portal":
+    st.title("🌐 专业文献检索入口")
+    st.markdown("点击下方按钮，即可在新标签页访问各大文献库的专业检索系统。")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.link_button("CNKI (知网)", "https://kns.cnki.net/kns8s/AdvSearch", use_container_width=True)
+    col2.link_button("Web of Science", "https://www.webofscience.com/wos/alldb/advanced-search", use_container_width=True)
+    col3.link_button("IEEE Xplore", "https://ieeexplore.ieee.org/search/advanced", use_container_width=True)
+    col4.link_button("超星发现", "https://www.zhizhen.com/s?adv=Su%3D%28plant%7Ccrop%29*%28disease%7Cpest%29*%28%22deep+learning%22%7CYOLO%29+AND+Y%3D2019%7C2020%7C2021%7C2022%7C2023%7C2024%7C2025%7C2026&aorp=p&size=15&isort=0&x=0_1348", use_container_width=True)
 
 # ================= 注入悬浮可拖拽数字人组件 =================
 components.html(f"""
