@@ -1,8 +1,7 @@
 import json
 from urllib.parse import urlsplit, urlunsplit
-
 import requests
-
+import streamlit as st
 
 class AIConnectionError(Exception):
     """可在界面直接展示的 API 错误，不包含密钥或原始响应。"""
@@ -99,12 +98,51 @@ def _chat_completion(settings, messages):
     return content.strip()
 
 
+def _stream_chat_completion(settings, messages):
+    """流式对话生成器"""
+    key, base_url, model = settings
+    parts = urlsplit(base_url)
+    endpoint = urlunsplit(parts._replace(path=parts.path + "/chat/completions"))
+    try:
+        response = requests.post(
+            endpoint, headers={"Authorization": f"Bearer {key}"},
+            json={"model": model, "messages": messages, "stream": True},
+            timeout=(10, 90), stream=True, allow_redirects=False,
+        )
+    except requests.exceptions.RequestException as e:
+        raise AIConnectionError(f"无法发起流式连接: {str(e)}")
+
+    if not 200 <= response.status_code < 300:
+        try:
+            data = response.json()
+        except:
+            data = {}
+        _raise_service_error(response.status_code, data)
+
+    for line in response.iter_lines():
+        if not line:
+            continue
+        line_str = line.decode('utf-8').strip()
+        if line_str.startswith("data: "):
+            data_content = line_str[6:]
+            if data_content == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_content)
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                if "content" in delta and delta["content"]:
+                    yield delta["content"]
+            except json.JSONDecodeError:
+                continue
+
+
 def test_connection(api_key, base_url, model_name):
     """用实际对话接口验证模型和密钥，并返回可保存的配置。"""
     settings = _connection_settings(api_key, base_url, model_name)
     _chat_completion(settings, [{"role": "user", "content": "请只回复 OK。"}])
     return settings
 
+@st.cache_data(show_spinner=False, ttl=3600)
 def get_synonyms(keyword, api_key, base_url, model_name):
     # Mock data for demonstration if no API key is provided
     if not (api_key or "").strip():
@@ -179,8 +217,50 @@ def parse_query_to_groups(query, api_key, base_url, model_name):
         
     return groups
 
+def search_wechat_articles(topic, api_key, base_url, model_name, article_count=5):
+    """通过 AI 检索微信公众号相关文章"""
+    if not (api_key or "").strip():
+        # 离线模式下返回 Mock 结果
+        mock_data = [
+            {"公众号名称": "计算机视觉大作战", "代表文章标题": "《YOLOv8 全系列实战教程》", "内容侧重方向": "YOLO 系列深度解读、实时目标检测前沿技术"},
+            {"公众号名称": "集智书童", "代表文章标题": "《小目标检测 Trick | 通用小目标检测解决方案》", "内容侧重方向": "小目标检测优化、模型性能提升技巧"},
+            {"公众号名称": "OpenCV 学堂", "代表文章标题": "《玩转 YOLOv8~YOLOv11 全系列模型》", "内容侧重方向": "YOLO 全系列实战教程、从训练到部署全流程"},
+            {"公众号名称": "AI 科技评论", "代表文章标题": "《深度学习在农业领域的应用现状与挑战》", "内容侧重方向": "农业 AI 前沿动态、学术综述"},
+            {"公众号名称": "机器之心", "代表文章标题": "《YOLOv11 来了！性能再破记录》", "内容侧重方向": "模型更新快报、技术深度解析"}
+        ]
+        return mock_data[:article_count]
+        
+    settings = _connection_settings(api_key, base_url, model_name)
+    prompt = (
+        f"请检索微信公众号中关于“{topic}”的优质文章，并整理成汇总表格。\n"
+        f"请提供大约 {article_count} 篇相关文章的信息。\n"
+        "表格需包含以下列：\n"
+        "1. 公众号名称\n"
+        "2. 代表文章标题\n"
+        "3. 内容侧重方向\n\n"
+        "请严格以 JSON 数组格式返回，每个元素是一个包含上述三个键的字典。"
+        "例如：[{\"公众号名称\": \"xxx\", \"代表文章标题\": \"yyy\", \"内容侧重方向\": \"zzz\"}, ...]\n"
+        "注意：只需要返回 JSON 数据，不要包含任何解释文本或 Markdown 标记。"
+    )
+    
+    content = _chat_completion(settings, [
+        {"role": "system", "content": "你是一个专业的文献检索与自媒体内容分析专家，擅长从微信公众号等平台挖掘深度技术文章。"},
+        {"role": "user", "content": prompt},
+    ])
+    
+    content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        articles = json.loads(content)
+    except ValueError:
+        articles = None
+        
+    if not isinstance(articles, list):
+        raise AIConnectionError("已连接模型，但返回的文章列表格式不正确。请重试或更换模型。")
+        
+    return articles
+
 def chat_with_agent(messages, api_key, base_url, model_name):
-    """数字人对话功能"""
+    """数字人对话功能 (非流式)"""
     if not (api_key or "").strip():
         return "您尚未配置有效的 API Key，我目前处于离线体验模式。请在左侧配置您的 API Key 唤醒我！"
         
@@ -188,3 +268,14 @@ def chat_with_agent(messages, api_key, base_url, model_name):
     api_messages = [{"role": "system", "content": "你是一个学术检索与农业计算机视觉领域的数字人助手，负责解答用户的疑问。你的回答应该专业、简洁且友好。"}]
     api_messages.extend({"role": msg["role"], "content": msg["content"]} for msg in messages)
     return _chat_completion(settings, api_messages)
+
+def stream_chat_with_agent(messages, api_key, base_url, model_name):
+    """数字人对话功能 (流式)"""
+    if not (api_key or "").strip():
+        yield "您尚未配置有效的 API Key，我目前处于离线体验模式。请在左侧配置您的 API Key 唤醒我！"
+        return
+        
+    settings = _connection_settings(api_key, base_url, model_name)
+    api_messages = [{"role": "system", "content": "你是一个学术检索与农业计算机视觉领域的数字人助手，负责解答用户的疑问。你的回答应该专业、简洁且友好。"}]
+    api_messages.extend({"role": msg["role"], "content": msg["content"]} for msg in messages)
+    yield from _stream_chat_completion(settings, api_messages)

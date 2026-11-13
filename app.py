@@ -1,13 +1,20 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import sqlite3
+import datetime
+import pandas as pd
 from translator import parse_input, translate_queries
-from ai_helper import AIConnectionError, test_connection, get_synonyms, chat_with_agent, parse_query_to_groups
+from ai_helper import (
+    AIConnectionError, test_connection, get_synonyms, 
+    chat_with_agent, stream_chat_with_agent, parse_query_to_groups,
+    search_wechat_articles
+)
 from db import (
     load_settings, save_settings, update_password,
     add_chat_msg, get_chat_history, clear_chat_history,
     add_recommendation_history, add_query_history,
-    add_translation_history, get_query_history, get_translation_history
+    add_translation_history, get_query_history, get_translation_history,
+    update_query_hit_counts, update_favorite_status
 )
 
 st.set_page_config(page_title="跨库检索式智能转译系统", page_icon="📚", layout="wide")
@@ -28,8 +35,16 @@ if "group_b" not in st.session_state:
 if "group_d" not in st.session_state:
     st.session_state.group_d = "深度学习\n计算机视觉\n目标检测\ndeep learning\ncomputer vision\nobject detection\nYOLO"
 if "messages" not in st.session_state:
-    # 从数据库加载历史记录
-    st.session_state.messages = get_chat_history()
+    # 从数据库加载历史记录 (默认加载最近50条)
+    st.session_state.messages = get_chat_history(limit=50)
+
+# 历史记录加载限制
+if "history_q_limit" not in st.session_state:
+    st.session_state.history_q_limit = 20
+if "history_t_limit" not in st.session_state:
+    st.session_state.history_t_limit = 20
+if "history_c_limit" not in st.session_state:
+    st.session_state.history_c_limit = 50
 
 # AI 设置状态
 if "ai_locked" not in st.session_state:
@@ -157,20 +172,23 @@ def chat_dialog():
         with chat_container:
             st.chat_message("user").write(prompt)
             # 获取 LLM 回复
-            with st.spinner("数字人思考中..."):
+            with st.chat_message("assistant"):
                 ak = st.session_state.api_key
                 bu = st.session_state.base_url
                 mn = st.session_state.model_name
                 try:
-                    response = chat_with_agent([*st.session_state.messages, user_message], ak, bu, mn)
+                    # 使用流式输出
+                    full_response = st.write_stream(
+                        stream_chat_with_agent([*st.session_state.messages, user_message], ak, bu, mn)
+                    )
                 except AIConnectionError as exc:
                     st.error(str(exc))
                     return
+            
             st.session_state.messages.append(user_message)
             add_chat_msg("user", prompt)
-            st.chat_message("assistant").write(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            add_chat_msg("assistant", response)
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
+            add_chat_msg("assistant", full_response)
 
 @st.dialog("🕒 历史记录", width="large")
 def history_dialog():
@@ -184,10 +202,14 @@ def history_dialog():
         end_date = st.date_input("结束日期", value=None, key="history_end_date")
     with f_col4:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        fav_only = st.checkbox("⭐ 仅看收藏", key="history_fav_only")
         do_search = st.button("🔎 查询", use_container_width=True)
 
-    import datetime
-    def is_match(text_contents, item_timestamp):
+    def is_match(text_contents, item_timestamp, is_fav):
+        # 收藏过滤
+        if st.session_state.get("history_applied_fav_only") and not is_fav:
+            return False
+            
         # 如果用户没有点击查询按钮，默认不应用任何过滤（显示全部）
         if not st.session_state.get("history_searched", False):
             return True
@@ -217,6 +239,7 @@ def history_dialog():
         st.session_state.history_applied_keyword = search_keyword
         st.session_state.history_applied_start = start_date
         st.session_state.history_applied_end = end_date
+        st.session_state.history_applied_fav_only = fav_only
         # 取消这里的 st.rerun()，因为 st.dialog 会在 rerun 时被关闭
 
     import re
@@ -233,8 +256,8 @@ def history_dialog():
     htab1, htab2, htab3 = st.tabs(["💬 聊天记录", "🔍 生成检索记录", "🪄 智能转译记录"])
     
     with htab1:
-        msgs = get_chat_history()
-        filtered_msgs = [m for m in msgs if is_match([m["content"]], m.get("timestamp", ""))]
+        msgs = get_chat_history(limit=st.session_state.history_c_limit)
+        filtered_msgs = [m for m in msgs if is_match([m["content"]], m.get("timestamp", ""), False)]
         if not filtered_msgs:
             st.info("暂无符合条件的聊天记录。")
         else:
@@ -242,42 +265,102 @@ def history_dialog():
                 with st.chat_message(msg["role"]):
                     st.caption(msg.get("timestamp", ""))
                     st.markdown(highlight_text(msg["content"]), unsafe_allow_html=True)
+            
+            if len(msgs) >= st.session_state.history_c_limit:
+                if st.button("加载更多聊天记录", key="load_more_chat"):
+                    st.session_state.history_c_limit += 50
+                    st.rerun()
                     
     with htab2:
-        q_history = get_query_history()
-        filtered_q = [q for q in q_history if is_match([q["group_a"], q["group_b"], q["group_d"], q["dbs"], q["results"]], q.get("timestamp", ""))]
+        q_history = get_query_history(limit=st.session_state.history_q_limit)
+        filtered_q = [q for q in q_history if is_match([q["group_a"], q["group_b"], q["group_d"], q["dbs"], q["results"]], q.get("timestamp", ""), q.get("is_favorite", 0))]
         if not filtered_q:
             st.info("暂无符合条件的生成检索记录。")
         else:
             for item in filtered_q:
-                with st.expander(f"🕒 {item['timestamp']} - {item['dbs']}"):
+                title = f"{'⭐ ' if item.get('is_favorite') else ''}🕒 {item['timestamp']} - {item['dbs']}"
+                with st.expander(title):
+                    c1, c2 = st.columns([4, 1])
+                    with c2:
+                        fav_label = "取消收藏" if item.get('is_favorite') else "设为收藏"
+                        if st.button(fav_label, key=f"fav_q_{item['id']}", use_container_width=True):
+                            update_favorite_status("query_history", item['id'], not item.get('is_favorite'))
+                            st.rerun()
+                    
                     st.markdown("**A组 (对象层):** " + highlight_text(item['group_a'].replace('\n', ', ')), unsafe_allow_html=True)
                     st.markdown("**B组 (危害层):** " + highlight_text(item['group_b'].replace('\n', ', ')), unsafe_allow_html=True)
                     st.markdown("**D组 (方法层):** " + highlight_text(item['group_d'].replace('\n', ', ')), unsafe_allow_html=True)
+                    
+                    # 命中数统计与可视化
+                    st.markdown("---")
+                    st.subheader("📊 命中数统计")
                     import json
+                    try:
+                        hits = json.loads(item.get('hit_counts', '{}'))
+                        dbs_list = json.loads(item['dbs'])
+                        
+                        # 编辑命中数
+                        edit_hits = {}
+                        h_cols = st.columns(len(dbs_list))
+                        for idx, db_name in enumerate(dbs_list):
+                            with h_cols[idx]:
+                                val = hits.get(db_name, 0)
+                                new_val = st.number_input(f"{db_name}", min_value=0, value=int(val), key=f"hit_{item['id']}_{db_name}")
+                                edit_hits[db_name] = new_val
+                        
+                        if st.button("保存命中数", key=f"save_hit_{item['id']}"):
+                            update_query_hit_counts(item['id'], edit_hits)
+                            st.toast("✅ 命中数已保存")
+                            st.rerun()
+                            
+                        # 可视化对比
+                        if any(edit_hits.values()):
+                            st.bar_chart(edit_hits)
+                            
+                    except Exception as e:
+                        st.error(f"加载统计数据失败: {e}")
+
+                    st.markdown("---")
+                    st.markdown("**检索结果详情:**")
                     try:
                         results = json.loads(item['results'])
                         for db, data in results.items():
                             st.markdown(f"*{db}*")
-                            # 代码块不支持内嵌 HTML，所以保持原样
                             st.code(data['query'], language="sql")
                     except:
                         st.markdown(highlight_text(item['results']), unsafe_allow_html=True)
 
+            if len(q_history) >= st.session_state.history_q_limit:
+                if st.button("加载更多生成记录", key="load_more_query"):
+                    st.session_state.history_q_limit += 20
+                    st.rerun()
+
     with htab3:
-        t_history = get_translation_history()
-        filtered_t = [t for t in t_history if is_match([t["source_query"], t["group_a"], t["group_b"], t["group_d"]], t.get("timestamp", ""))]
+        t_history = get_translation_history(limit=st.session_state.history_t_limit)
+        filtered_t = [t for t in t_history if is_match([t["source_query"], t["group_a"], t["group_b"], t["group_d"]], t.get("timestamp", ""), t.get("is_favorite", 0))]
         if not filtered_t:
             st.info("暂无符合条件的智能转译记录。")
         else:
             for item in filtered_t:
-                with st.expander(f"🕒 {item['timestamp']}"):
+                title = f"{'⭐ ' if item.get('is_favorite') else ''}🕒 {item['timestamp']}"
+                with st.expander(title):
+                    c1, c2 = st.columns([4, 1])
+                    with c2:
+                        fav_label = "取消收藏" if item.get('is_favorite') else "设为收藏"
+                        if st.button(fav_label, key=f"fav_t_{item['id']}", use_container_width=True):
+                            update_favorite_status("translation_history", item['id'], not item.get('is_favorite'))
+                            st.rerun()
                     st.markdown("**原始检索式:**")
                     st.code(item['source_query'])
                     st.markdown("**解析结果:**")
                     st.markdown(f"- **A组:** {highlight_text(item['group_a'].replace(chr(10), ', '))}", unsafe_allow_html=True)
                     st.markdown(f"- **B组:** {highlight_text(item['group_b'].replace(chr(10), ', '))}", unsafe_allow_html=True)
                     st.markdown(f"- **D组:** {highlight_text(item['group_d'].replace(chr(10), ', '))}", unsafe_allow_html=True)
+
+            if len(t_history) >= st.session_state.history_t_limit:
+                if st.button("加载更多转译记录", key="load_more_trans"):
+                    st.session_state.history_t_limit += 20
+                    st.rerun()
 
 
 st.sidebar.markdown("---")
@@ -369,7 +452,7 @@ if st.session_state.current_page == "home":
     st.markdown("基于多库语法规则，一键生成 CNKI、Web of Science、IEEE Xplore、超星发现 等平台的合规检索式。")
 
     # Inputs
-    tab1, tab2 = st.tabs(["🧩 概念组拼接模式", "🪄 智能转译模式 (输入完整检索式)"])
+    tab1, tab2, tab3 = st.tabs(["🧩 概念组拼接模式", "🪄 智能转译模式 (输入完整检索式)", "📱 微信公众号检索"])
 
     with tab1:
         st.subheader("📝 概念组关键词输入 (每行一个词)")
@@ -377,10 +460,19 @@ if st.session_state.current_page == "home":
     
         with col1:
             st.text_area("A组：对象层 (如：作物, plant)", key="group_a_widget", value=st.session_state.group_a, height=200, on_change=lambda: st.session_state.update(group_a=st.session_state.group_a_widget))
+            if st.button("🧹 清空A组", key="clear_a"):
+                st.session_state.group_a = ""
+                st.rerun()
         with col2:
             st.text_area("B组：危害层 (如：病害, disease)", key="group_b_widget", value=st.session_state.group_b, height=200, on_change=lambda: st.session_state.update(group_b=st.session_state.group_b_widget))
+            if st.button("🧹 清空B组", key="clear_b"):
+                st.session_state.group_b = ""
+                st.rerun()
         with col3:
             st.text_area("D组：方法层 (如：深度学习, YOLO)", key="group_d_widget", value=st.session_state.group_d, height=200, on_change=lambda: st.session_state.update(group_d=st.session_state.group_d_widget))
+            if st.button("🧹 清空D组", key="clear_d"):
+                st.session_state.group_d = ""
+                st.rerun()
 
     with tab2:
         st.subheader("🪄 输入现有文献库的完整检索式")
@@ -462,6 +554,34 @@ if st.session_state.current_page == "home":
         
         if "direct_translate_results" in st.session_state:
             st.markdown("---")
+            # 汇总结果
+            all_direct_queries = ""
+            for db in dbs:
+                if db in st.session_state.direct_translate_results:
+                    all_direct_queries += f"--- {db} ---\n{st.session_state.direct_translate_results[db]['query']}\n\n"
+            
+            with st.expander("📋 一键复制所有结果"):
+                st.text_area("所有转译结果汇总", value=all_direct_queries, height=150, key="copy_all_direct")
+            
+            # 导出按钮
+            export_direct_md = f"# 跨库检索式转译报告 (智能转译模式)\n\n生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            export_direct_md += f"**源检索式**:\n```sql\n{source_query}\n```\n\n"
+            export_direct_md += "---\n\n"
+            for db in dbs:
+                if db in st.session_state.direct_translate_results:
+                    data = st.session_state.direct_translate_results[db]
+                    export_direct_md += f"## {db}\n\n**提示**: {data['note']}\n\n```sql\n{data['query']}\n```\n\n"
+            
+            st.download_button(
+                label="📥 导出转译结果",
+                data=export_direct_md,
+                file_name=f"智能转译报告_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key="download_direct"
+            )
+
+            st.markdown("---")
             for db in dbs:
                 if db in st.session_state.direct_translate_results:
                     data = st.session_state.direct_translate_results[db]
@@ -470,6 +590,177 @@ if st.session_state.current_page == "home":
                     st.code(data['query'], language="sql")
                     st.markdown("---")
             del st.session_state.direct_translate_results
+
+    with tab3:
+        st.subheader("📱 微信公众号相关文章检索")
+        st.markdown("输入您感兴趣的文章主题或相关文章关键词，AI 将为您检索并罗列优质公众号及代表作。")
+        
+        wechat_topic = st.text_input("文章主题 / 关键词", placeholder="例如：目标检测、农业无人机、YOLOv11 实战...", key="wechat_topic_input")
+        
+        col_c1, col_c2, col_c3 = st.columns([2, 2, 4])
+        with col_c1:
+            article_count = st.number_input("检索篇数", min_value=1, max_value=20, value=5, step=1, key="wechat_article_count")
+        with col_c2:
+            st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+            do_wechat_search = st.button("🔍 确认检索", type="primary", use_container_width=True, disabled=has_unsaved_changes)
+        
+        if do_wechat_search:
+            if wechat_topic.strip():
+                with st.spinner("AI 正在深度检索中..."):
+                    try:
+                        results = search_wechat_articles(
+                            wechat_topic,
+                            st.session_state.api_key,
+                            st.session_state.base_url,
+                            st.session_state.model_name,
+                            article_count=article_count
+                        )
+                        st.session_state.wechat_search_results = results
+                        st.session_state.wechat_search_topic = wechat_topic
+                    except AIConnectionError as exc:
+                        st.error(str(exc))
+            else:
+                st.warning("请输入主题或关键词")
+        
+        if "wechat_search_results" in st.session_state and st.session_state.wechat_search_results:
+            st.markdown(f"### 🔍 关于 “{st.session_state.wechat_search_topic}” 的检索结果")
+            
+            # 注入自定义 CSS 以调窄行间距并使复制按钮常驻
+            components.html("""
+                <style>
+                /* 强制修改父页面的样式 */
+                body {
+                    --compact-padding: 2px;
+                }
+                </style>
+                <script>
+                const parentDoc = window.parent.document;
+                
+                // 1. 注入 CSS 到父页面以确保复制按钮图标常驻显示，并调窄间距
+                const style = parentDoc.createElement('style');
+                style.innerHTML = `
+                    /* 调窄列间距 */
+                    [data-testid="column"] {
+                        padding-left: 5px !important;
+                        padding-right: 5px !important;
+                    }
+                    /* 美化并压缩 st.code 块 */
+                    [data-testid="stCodeBlock"] {
+                        margin-top: -8px !important;
+                        margin-bottom: -8px !important;
+                        background-color: transparent !important;
+                    }
+                    [data-testid="stCodeBlock"] pre {
+                        padding: 5px 40px 5px 10px !important;
+                        background-color: #f0f2f6 !important;
+                        border-radius: 4px !important;
+                        font-size: 0.85rem !important;
+                    }
+                    /* 强制显示复制按钮图标 */
+                    [data-testid="stCodeBlock"] button {
+                        opacity: 1 !important;
+                        visibility: visible !important;
+                        display: flex !important;
+                        right: 5px !important;
+                        top: 50% !important;
+                        transform: translateY(-50%) !important;
+                        background: rgba(255,255,255,0.8) !important;
+                        border-radius: 4px !important;
+                        width: 28px !important;
+                        height: 28px !important;
+                    }
+                    /* 调整内容侧重方向的文本 */
+                    .compact-text {
+                        margin: 0 !important;
+                        padding: 2px 0 !important;
+                        line-height: 1.3 !important;
+                        font-size: 0.9rem !important;
+                    }
+                `;
+                parentDoc.head.appendChild(style);
+
+                // 2. 监听点击事件以显示“复制成功”提示
+                parentDoc.addEventListener('click', function(e) {
+                    // 检查点击的是否是复制按钮（或者按钮内的图标）
+                    const btn = e.target.closest('button');
+                    if (btn && (btn.getAttribute('aria-label') === 'Copy to clipboard' || btn.title === 'Copy to clipboard')) {
+                        // 延迟一点点显示，确保复制操作已触发
+                        setTimeout(() => {
+                            const notice = parentDoc.createElement('div');
+                            notice.innerText = '✅ 复制成功';
+                            notice.style.position = 'fixed';
+                            notice.style.top = '80px';
+                            notice.style.left = '50%';
+                            notice.style.transform = 'translateX(-50%)';
+                            notice.style.backgroundColor = '#00cc66';
+                            notice.style.color = 'white';
+                            notice.style.padding = '8px 16px';
+                            notice.style.borderRadius = '20px';
+                            notice.style.zIndex = '9999999';
+                            notice.style.fontSize = '14px';
+                            notice.style.fontWeight = 'bold';
+                            notice.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+                            notice.style.transition = 'opacity 0.3s, transform 0.3s';
+                            
+                            parentDoc.body.appendChild(notice);
+                            
+                            setTimeout(() => {
+                                notice.style.opacity = '0';
+                                notice.style.transform = 'translateX(-50%) translateY(-10px)';
+                                setTimeout(() => parentDoc.body.removeChild(notice), 300);
+                            }, 1500);
+                        }, 50);
+                    }
+                }, true); // 使用捕获阶段以确保能截获点击
+                </script>
+            """, height=0, width=0)
+
+            # 自定义表格头部
+            h_col1, h_col2, h_col3 = st.columns([2.5, 4, 3.5])
+            h_col1.markdown("**公众号名称**")
+            h_col2.markdown("**代表文章标题**")
+            h_col3.markdown("**内容侧重方向**")
+            st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
+
+            # 遍历结果并显示
+            for idx, item in enumerate(st.session_state.wechat_search_results):
+                name = item.get('公众号名称', '')
+                title = item.get('代表文章标题', '')
+                direction = item.get('内容侧重方向', '')
+                
+                row_col1, row_col2, row_col3 = st.columns([2.5, 4, 3.5])
+                
+                with row_col1:
+                    st.code(name, language=None)
+                with row_col2:
+                    st.code(title, language=None)
+                with row_col3:
+                    st.markdown(f"<p class='compact-text'>{direction}</p>", unsafe_allow_html=True)
+                
+                st.markdown("<hr style='margin: 2px 0;'>", unsafe_allow_html=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # 导出功能
+            export_wechat_md = f"# 微信公众号文章检索报告\n\n检索主题: {st.session_state.wechat_search_topic}\n生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            export_wechat_md += "| 公众号名称 | 代表文章标题 | 内容侧重方向 |\n"
+            export_wechat_md += "| :--- | :--- | :--- |\n"
+            for item in st.session_state.wechat_search_results:
+                export_wechat_md += f"| {item.get('公众号名称', '')} | {item.get('代表文章标题', '')} | {item.get('内容侧重方向', '')} |\n"
+            
+            st.download_button(
+                label="📥 导出为表格报告 (Markdown)",
+                data=export_wechat_md,
+                file_name=f"微信检索报告_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key="download_wechat"
+            )
+            
+            if st.button("🧹 清空检索结果", key="clear_wechat"):
+                del st.session_state.wechat_search_results
+                del st.session_state.wechat_search_topic
+                st.rerun()
 
     # AI 推荐模块
     st.markdown("---")
@@ -520,11 +811,37 @@ if st.session_state.current_page == "home":
         else:
             st.success("✅ 生成成功！请复制下方对应的检索式。")
             results = translate_queries(groups, dbs, start_year, end_year)
-            st.write(f"Debug: dbs is {dbs}")
-        
+            
             # 记录到数据库
             add_query_history(st.session_state.group_a, st.session_state.group_b, st.session_state.group_d, dbs, start_year, end_year, results)
         
+            # 汇总所有结果方便一键复制
+            all_queries = ""
+            for db in dbs:
+                if db in results:
+                    all_queries += f"--- {db} ---\n{results[db]['query']}\n\n"
+            
+            with st.expander("📋 一键复制所有结果"):
+                st.text_area("所有数据库检索式汇总", value=all_queries, height=150)
+            
+            # 导出按钮
+            export_md = f"# 跨库检索转译报告\n\n生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            export_md += f"**检索年份**: {start_year} - {end_year}\n\n"
+            export_md += f"**关键词组**:\n- A组: {st.session_state.group_a.replace(chr(10), ', ')}\n- B组: {st.session_state.group_b.replace(chr(10), ', ')}\n- D组: {st.session_state.group_d.replace(chr(10), ', ')}\n\n"
+            export_md += "---\n\n"
+            for db in dbs:
+                if db in results:
+                    export_md += f"## {db}\n\n**提示**: {results[db]['note']}\n\n```sql\n{results[db]['query']}\n```\n\n"
+            
+            st.download_button(
+                label="📥 导出为 Markdown 报告",
+                data=export_md,
+                file_name=f"检索式转译报告_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                mime="text/markdown",
+                use_container_width=True
+            )
+
+            st.markdown("---")
             # Display results in cards, ONLY for the selected databases in `dbs`
             for db in dbs:
                 if db in results:

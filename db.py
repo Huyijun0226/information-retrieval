@@ -3,11 +3,10 @@ from pathlib import Path
 import json
 import base64
 from cryptography.fernet import Fernet
+from config import ENCRYPTION_KEY
 
 DB_FILE = Path(__file__).resolve().with_name("settings.db")
 
-# 固定的加密密钥 (在实际生产中应该通过环境变量注入，这里为了简化演示直接使用固定值)
-ENCRYPTION_KEY = b'wz9-kE0q3wG-yU6f5W3V_s1s2r1k9tX7yU9zH1c4o0w='
 cipher_suite = Fernet(ENCRYPTION_KEY)
 
 def encrypt_api_key(api_key: str) -> str:
@@ -80,7 +79,9 @@ def init_db():
             start_year TEXT,
             end_year TEXT,
             results TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            is_favorite INTEGER DEFAULT 0,
+            hit_counts TEXT DEFAULT '{}'
         )
     ''')
     cursor.execute('''
@@ -90,9 +91,23 @@ def init_db():
             group_a TEXT,
             group_b TEXT,
             group_d TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            is_favorite INTEGER DEFAULT 0
         )
     ''')
+    
+    # 检查字段是否存在（向下兼容）
+    cursor.execute("PRAGMA table_info(query_history)")
+    q_columns = [col[1] for col in cursor.fetchall()]
+    if 'is_favorite' not in q_columns:
+        cursor.execute("ALTER TABLE query_history ADD COLUMN is_favorite INTEGER DEFAULT 0")
+    if 'hit_counts' not in q_columns:
+        cursor.execute("ALTER TABLE query_history ADD COLUMN hit_counts TEXT DEFAULT '{}'")
+
+    cursor.execute("PRAGMA table_info(translation_history)")
+    t_columns = [col[1] for col in cursor.fetchall()]
+    if 'is_favorite' not in t_columns:
+        cursor.execute("ALTER TABLE translation_history ADD COLUMN is_favorite INTEGER DEFAULT 0")
     
     conn.commit()
     conn.close()
@@ -146,10 +161,10 @@ def add_chat_msg(role, content):
     conn.commit()
     conn.close()
 
-def get_chat_history():
+def get_chat_history(limit=50, offset=0):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT role, content, timestamp FROM chat_history ORDER BY id ASC')
+    cursor.execute('SELECT role, content, timestamp FROM chat_history ORDER BY id ASC LIMIT ? OFFSET ?', (limit, offset))
     rows = cursor.fetchall()
     conn.close()
     return [{"role": r[0], "content": r[1], "timestamp": r[2]} for r in rows]
@@ -191,19 +206,46 @@ def add_translation_history(source_query, group_a, group_b, group_d):
     conn.commit()
     conn.close()
 
-def get_query_history():
+def get_query_history(limit=20, offset=0):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT id, group_a, group_b, group_d, dbs, start_year, end_year, results, timestamp FROM query_history ORDER BY id DESC LIMIT 1000')
+    cursor.execute(f'''
+        SELECT id, group_a, group_b, group_d, dbs, start_year, end_year, results, timestamp, is_favorite, hit_counts 
+        FROM query_history 
+        ORDER BY is_favorite DESC, id DESC 
+        LIMIT ? OFFSET ?
+    ''', (limit, offset))
     rows = cursor.fetchall()
     conn.close()
-    return [{"id": r[0], "group_a": r[1], "group_b": r[2], "group_d": r[3], "dbs": r[4], "start_year": r[5], "end_year": r[6], "results": r[7], "timestamp": r[8]} for r in rows]
+    return [{"id": r[0], "group_a": r[1], "group_b": r[2], "group_d": r[3], "dbs": r[4], "start_year": r[5], "end_year": r[6], "results": r[7], "timestamp": r[8], "is_favorite": r[9], "hit_counts": r[10]} for r in rows]
 
-def get_translation_history():
+def get_translation_history(limit=20, offset=0):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT id, source_query, group_a, group_b, group_d, timestamp FROM translation_history ORDER BY id DESC LIMIT 1000')
+    cursor.execute(f'''
+        SELECT id, source_query, group_a, group_b, group_d, timestamp, is_favorite 
+        FROM translation_history 
+        ORDER BY is_favorite DESC, id DESC 
+        LIMIT ? OFFSET ?
+    ''', (limit, offset))
     rows = cursor.fetchall()
     conn.close()
-    return [{"id": r[0], "source_query": r[1], "group_a": r[2], "group_b": r[3], "group_d": r[4], "timestamp": r[5]} for r in rows]
+    return [{"id": r[0], "source_query": r[1], "group_a": r[2], "group_b": r[3], "group_d": r[4], "timestamp": r[5], "is_favorite": r[6]} for r in rows]
+
+def update_query_hit_counts(history_id, hit_counts):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    hit_counts_str = json.dumps(hit_counts, ensure_ascii=False) if isinstance(hit_counts, dict) else str(hit_counts)
+    cursor.execute('UPDATE query_history SET hit_counts = ? WHERE id = ?', (hit_counts_str, history_id))
+    conn.commit()
+    conn.close()
+
+def update_favorite_status(table_name, history_id, is_favorite):
+    if table_name not in ["query_history", "translation_history"]:
+        return
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(f'UPDATE {table_name} SET is_favorite = ? WHERE id = ?', (1 if is_favorite else 0, history_id))
+    conn.commit()
+    conn.close()
 
