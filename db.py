@@ -74,7 +74,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             group_a TEXT,
             group_b TEXT,
-            group_d TEXT,
+            group_c TEXT,
             dbs TEXT,
             start_year TEXT,
             end_year TEXT,
@@ -90,7 +90,7 @@ def init_db():
             source_query TEXT,
             group_a TEXT,
             group_b TEXT,
-            group_d TEXT,
+            group_c TEXT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
             is_favorite INTEGER DEFAULT 0
         )
@@ -99,6 +99,12 @@ def init_db():
     # 检查字段是否存在（向下兼容）
     cursor.execute("PRAGMA table_info(query_history)")
     q_columns = [col[1] for col in cursor.fetchall()]
+    if 'group_c' not in q_columns:
+        if 'group_d' in q_columns:
+            cursor.execute("ALTER TABLE query_history RENAME COLUMN group_d TO group_c")
+        else:
+            cursor.execute("ALTER TABLE query_history ADD COLUMN group_c TEXT")
+    
     if 'is_favorite' not in q_columns:
         cursor.execute("ALTER TABLE query_history ADD COLUMN is_favorite INTEGER DEFAULT 0")
     if 'hit_counts' not in q_columns:
@@ -106,6 +112,12 @@ def init_db():
 
     cursor.execute("PRAGMA table_info(translation_history)")
     t_columns = [col[1] for col in cursor.fetchall()]
+    if 'group_c' not in t_columns:
+        if 'group_d' in t_columns:
+            cursor.execute("ALTER TABLE translation_history RENAME COLUMN group_d TO group_c")
+        else:
+            cursor.execute("ALTER TABLE translation_history ADD COLUMN group_c TEXT")
+    
     if 'is_favorite' not in t_columns:
         cursor.execute("ALTER TABLE translation_history ADD COLUMN is_favorite INTEGER DEFAULT 0")
     
@@ -184,53 +196,55 @@ def add_recommendation_history(seed_keyword, synonyms):
     conn.commit()
     conn.close()
 
-def add_query_history(group_a, group_b, group_d, dbs, start_year, end_year, results):
+def add_query_history(group_a, group_b, group_c, dbs, start_year, end_year, results):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     dbs_str = json.dumps(dbs, ensure_ascii=False) if isinstance(dbs, list) else str(dbs)
     results_str = json.dumps(results, ensure_ascii=False) if isinstance(results, (dict, list)) else str(results)
     cursor.execute('''
-        INSERT INTO query_history (group_a, group_b, group_d, dbs, start_year, end_year, results) 
+        INSERT INTO query_history (group_a, group_b, group_c, dbs, start_year, end_year, results) 
         VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (group_a, group_b, group_d, dbs_str, start_year, end_year, results_str))
+    ''', (group_a, group_b, group_c, dbs_str, start_year, end_year, results_str))
     conn.commit()
     conn.close()
 
-def add_translation_history(source_query, group_a, group_b, group_d):
+def add_translation_history(source_query, group_a, group_b, group_c):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO translation_history (source_query, group_a, group_b, group_d) 
+        INSERT INTO translation_history (source_query, group_a, group_b, group_c) 
         VALUES (?, ?, ?, ?)
-    ''', (source_query, group_a, group_b, group_d))
+    ''', (source_query, group_a, group_b, group_c))
     conn.commit()
     conn.close()
 
-def get_query_history(limit=20, offset=0):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute(f'''
-        SELECT id, group_a, group_b, group_d, dbs, start_year, end_year, results, timestamp, is_favorite, hit_counts 
-        FROM query_history 
-        ORDER BY is_favorite DESC, id DESC 
-        LIMIT ? OFFSET ?
-    ''', (limit, offset))
-    rows = cursor.fetchall()
-    conn.close()
-    return [{"id": r[0], "group_a": r[1], "group_b": r[2], "group_d": r[3], "dbs": r[4], "start_year": r[5], "end_year": r[6], "results": r[7], "timestamp": r[8], "is_favorite": r[9], "hit_counts": r[10]} for r in rows]
+def _filtered_history(table, columns, limit, offset, keyword="", start_date=None, end_date=None, favorite_only=False):
+    clauses, params = [], []
+    if keyword:
+        clauses.append("(" + " OR ".join(f"{column} LIKE ?" for column in columns) + ")")
+        params.extend(["%" + keyword + "%"] * len(columns))
+    if start_date:
+        clauses.append("date(timestamp) >= date(?)")
+        params.append(str(start_date))
+    if end_date:
+        clauses.append("date(timestamp) <= date(?)")
+        params.append(str(end_date))
+    if favorite_only:
+        clauses.append("is_favorite = 1")
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(f"SELECT * FROM {table}{where} ORDER BY is_favorite DESC, id DESC LIMIT ? OFFSET ?", [*params, limit, offset]).fetchall()
+    return [dict(row) for row in rows]
 
-def get_translation_history(limit=20, offset=0):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute(f'''
-        SELECT id, source_query, group_a, group_b, group_d, timestamp, is_favorite 
-        FROM translation_history 
-        ORDER BY is_favorite DESC, id DESC 
-        LIMIT ? OFFSET ?
-    ''', (limit, offset))
-    rows = cursor.fetchall()
-    conn.close()
-    return [{"id": r[0], "source_query": r[1], "group_a": r[2], "group_b": r[3], "group_d": r[4], "timestamp": r[5], "is_favorite": r[6]} for r in rows]
+
+def get_query_history(limit=20, offset=0, *, keyword="", start_date=None, end_date=None, favorite_only=False):
+    return _filtered_history("query_history", ["group_a", "group_b", "group_c", "dbs", "results"], limit, offset, keyword, start_date, end_date, favorite_only)
+
+
+def get_translation_history(limit=20, offset=0, *, keyword="", start_date=None, end_date=None, favorite_only=False):
+    return _filtered_history("translation_history", ["source_query", "group_a", "group_b", "group_c"], limit, offset, keyword, start_date, end_date, favorite_only)
+
 
 def update_query_hit_counts(history_id, hit_counts):
     conn = sqlite3.connect(DB_FILE)

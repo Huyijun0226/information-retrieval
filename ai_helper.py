@@ -129,7 +129,13 @@ def _stream_chat_completion(settings, messages):
                 break
             try:
                 chunk = json.loads(data_content)
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                choices = chunk.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    continue
+                choice = choices[0]
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta", {})
                 if "content" in delta and delta["content"]:
                     yield delta["content"]
             except json.JSONDecodeError:
@@ -189,7 +195,7 @@ def parse_query_to_groups(query, api_key, base_url, model_name):
         return {
             "group_a": ["plant", "crop"],
             "group_b": ["disease", "pest"],
-            "group_d": ["deep learning", "YOLO"]
+            "group_c": ["deep learning", "YOLO"]
         }
         
     settings = _connection_settings(api_key, base_url, model_name)
@@ -198,8 +204,8 @@ def parse_query_to_groups(query, api_key, base_url, model_name):
         "将其中的检索词提取并分类为以下三组（如果没有对应概念则为空列表）：\n"
         "1. group_a：对象层（如作物、植物、plant等）\n"
         "2. group_b：危害层（如病害、虫害、disease等）\n"
-        "3. group_d：方法层（如深度学习、目标检测、YOLO等）\n"
-        "请严格以 JSON 格式返回，包含 group_a, group_b, group_d 三个键，值为字符串列表。"
+        "3. group_c：方法层（如深度学习、目标检测、YOLO等）\n"
+        "请严格以 JSON 格式返回，包含 group_a, group_b, group_c 三个键，值为字符串列表。"
         "注意：只需要提取基础词汇，去除通配符、引号和逻辑运算符。不要返回任何其他解释文本或 Markdown 标记。"
     )
     content = _chat_completion(settings, [
@@ -212,7 +218,7 @@ def parse_query_to_groups(query, api_key, base_url, model_name):
     except ValueError:
         groups = None
         
-    if not isinstance(groups, dict) or not all(k in groups for k in ["group_a", "group_b", "group_d"]):
+    if not isinstance(groups, dict) or not all(k in groups for k in ["group_a", "group_b", "group_c"]):
         raise AIConnectionError("已连接模型，但解析结果格式不正确。请重试或更换模型。")
         
     return groups

@@ -28,3 +28,7 @@ Thumbs.db
 
 # Secrets
 secret.key
+# Share appearance settings; keep credentials local.
+!.streamlit/
+.streamlit/*
+!.streamlit/config.toml

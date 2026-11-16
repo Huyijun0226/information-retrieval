@@ -1,8 +1,15 @@
 from abc import ABC, abstractmethod
 
+import re
+
 def parse_input(text):
-    """将多行文本解析为有效词汇列表"""
-    return [line.strip() for line in text.split('\n') if line.strip()]
+    """将文本解析为有效词汇列表，支持换行、逗号、分号、顿号分隔"""
+    if not text:
+        return []
+    # 使用正则表达式匹配多种分隔符：换行 \n, 英文逗号 ,, 中文逗号 ，, 英文分号 ;, 中文分号 ；, 顿号 、
+    # 同时过滤掉空字符串
+    raw_words = re.split(r'[\n,，;；、]', text)
+    return [w.strip() for w in raw_words if w.strip()]
 
 class BaseTranslator(ABC):
     """转译策略基类"""
@@ -124,7 +131,7 @@ TRANSLATOR_STRATEGIES = {
 def translate_queries(groups, dbs, start_year, end_year):
     """
     核心转译引擎 (基于策略模式)
-    :param groups: 列表的列表，例如 [ [A组词], [B组词], [D组词] ]
+    :param groups: 列表的列表，例如 [ [A组词], [B组词], [C组词] ]
     :param dbs: 用户勾选的目标数据库列表
     :param start_year: 起始年份
     :param end_year: 结束年份
